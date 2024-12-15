@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "spy_types.h"
+#include "../spy/spy_types.h"
 
 #define WECHAREXE       L"WeChat.exe"
 #define WECHATWINDLL    L"WeChatWin.dll"

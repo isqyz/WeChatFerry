@@ -1,5 +1,5 @@
 ﻿#include "Shlwapi.h"
-#include "framework.h"
+#include "../spy/framework.h"
 #include <codecvt>
 #include <locale>
 #include <string.h>
