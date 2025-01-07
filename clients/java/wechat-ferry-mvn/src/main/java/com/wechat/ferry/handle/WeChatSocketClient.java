@@ -1,32 +1,29 @@
 package com.wechat.ferry.handle;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.function.Function;
 
 import org.springframework.util.ObjectUtils;
 
 import com.alibaba.fastjson2.JSONObject;
+import com.google.protobuf.ByteString;
 import com.sun.jna.Native;
 import com.wechat.ferry.entity.dto.WxPpMsgDTO;
-import com.wechat.ferry.entity.proto.Wcf;
 import com.wechat.ferry.entity.proto.Wcf.DbQuery;
 import com.wechat.ferry.entity.proto.Wcf.DbRow;
-import com.wechat.ferry.entity.proto.Wcf.DbTable;
 import com.wechat.ferry.entity.proto.Wcf.DecPath;
 import com.wechat.ferry.entity.proto.Wcf.Functions;
-import com.wechat.ferry.entity.proto.Wcf.MemberMgmt;
 import com.wechat.ferry.entity.proto.Wcf.Request;
 import com.wechat.ferry.entity.proto.Wcf.Response;
-import com.wechat.ferry.entity.proto.Wcf.RpcContact;
-import com.wechat.ferry.entity.proto.Wcf.UserInfo;
-import com.wechat.ferry.entity.proto.Wcf.Verification;
 import com.wechat.ferry.entity.proto.Wcf.WxMsg;
-import com.wechat.ferry.enums.SexEnum;
+import com.wechat.ferry.exception.BizException;
 import com.wechat.ferry.service.SDK;
 import com.wechat.ferry.utils.HttpClientUtil;
 import com.wechat.ferry.utils.XmlJsonConvertUtil;
@@ -37,6 +34,7 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * 处理层-微信客户端
+ * version：39.3.3
  *
  * @author Changhua
  * @date 2023-12-06 22:11
@@ -123,14 +121,21 @@ public class WeChatSocketClient {
 
     public Response sendCmd(Request req) {
         try {
+            // 设置超时时间 20s
+            cmdSocket.setSendTimeout(20000);
             ByteBuffer bb = ByteBuffer.wrap(req.toByteArray());
             cmdSocket.send(bb);
             ByteBuffer ret = ByteBuffer.allocate(BUFFER_SIZE);
             long size = cmdSocket.receive(ret, true);
             return Response.parseFrom(Arrays.copyOfRange(ret.array(), 0, (int)size));
         } catch (Exception e) {
-            log.error("命令调用失败: ", e);
-            return null;
+            if ("Timed out".equals(e.getMessage())) {
+                log.error("请求超时: ", e);
+                throw new BizException("请求超时:1.接口耗时太长，2.服务与客户端失去联系，请重启本服务！详细异常信息：" + e.getMessage());
+            } else {
+                log.error("命令调用失败: ", e);
+                throw new BizException("命令调用失败:" + e.getMessage());
+            }
         }
     }
 
@@ -146,53 +151,6 @@ public class WeChatSocketClient {
             return rsp.getStatus() == 1;
         }
         return false;
-    }
-
-    /**
-     * 获得微信客户端登录的微信ID
-     *
-     * @return 微信ID
-     */
-    public String getSelfWxId() {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_SELF_WXID_VALUE).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            return rsp.getStr();
-        }
-        return "";
-    }
-
-    /**
-     * 获取所有消息类型
-     *
-     * @return 消息类型集合
-     */
-    public Map<Integer, String> getMsgTypes() {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_MSG_TYPES_VALUE).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            return rsp.getTypes().getTypesMap();
-        }
-        return Wcf.MsgTypes.newBuilder().build().getTypesMap();
-    }
-
-    /**
-     * 获取所有联系人
-     * "fmessage": "朋友推荐消息",
-     * "medianote": "语音记事本",
-     * "floatbottle": "漂流瓶",
-     * "filehelper": "文件传输助手",
-     * "newsapp": "新闻",
-     *
-     * @return 联系人列表
-     */
-    public List<RpcContact> getContacts() {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_CONTACTS_VALUE).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            return rsp.getContacts().getContactsList();
-        }
-        return Wcf.RpcContacts.newBuilder().build().getContactsList();
     }
 
     /**
@@ -213,176 +171,6 @@ public class WeChatSocketClient {
     }
 
     /**
-     * 获取所有数据库名
-     *
-     * @return 数据库名称列表
-     */
-    public List<String> getDbNames() {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_DB_NAMES_VALUE).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            return rsp.getDbs().getNamesList();
-        }
-        return Wcf.DbNames.newBuilder().build().getNamesList();
-    }
-
-    /**
-     * 获取指定数据库中的所有表
-     *
-     * @param db 数据库名称
-     * @return 数据库中表列表
-     */
-    public Map<String, String> getDbTables(String db) {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_DB_TABLES_VALUE).setStr(db).build();
-        Response rsp = sendCmd(req);
-        Map<String, String> tables = new HashMap<>();
-        if (rsp != null) {
-            for (DbTable tbl : rsp.getTables().getTablesList()) {
-                tables.put(tbl.getName(), tbl.getSql());
-            }
-        }
-        return tables;
-    }
-
-    /**
-     * @param msg: 消息内容（如果是 @ 消息则需要有跟 @ 的人数量相同的 @）
-     * @param receiver: 消息接收人，私聊为 wxid（wxid_xxxxxxxxxxxxxx），群聊为
-     *            roomid（xxxxxxxxxx@chatroom）
-     * @param aters: 群聊时要 @ 的人（私聊时为空字符串），多个用逗号分隔。@所有人 用
-     *            notify@all（必须是群主或者管理员才有权限）
-     * @return int
-     * @Description 发送文本消息
-     * @author Changhua
-     * @example sendText(" Hello @ 某人1 @ 某人2 ", " xxxxxxxx @ chatroom ",
-     *          "wxid_xxxxxxxxxxxxx1,wxid_xxxxxxxxxxxxx2");
-     */
-    public int sendText(String msg, String receiver, String aters) {
-        Wcf.TextMsg textMsg = Wcf.TextMsg.newBuilder().setMsg(msg).setReceiver(receiver).setAters(aters).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_SEND_TXT_VALUE).setTxt(textMsg).build();
-        log.debug("sendText: {}", bytesToHex(req.toByteArray()));
-        Response rsp = sendCmd(req);
-        int ret = -1;
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 发送图片消息
-     *
-     * @param path 图片地址
-     * @param receiver 接收者微信id
-     * @return 发送结果状态码
-     */
-    public int sendImage(String path, String receiver) {
-        Wcf.PathMsg pathMsg = Wcf.PathMsg.newBuilder().setPath(path).setReceiver(receiver).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_SEND_IMG_VALUE).setFile(pathMsg).build();
-        log.debug("sendImage: {}", bytesToHex(req.toByteArray()));
-        Response rsp = sendCmd(req);
-        int ret = -1;
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 发送文件消息
-     *
-     * @param path 文件地址
-     * @param receiver 接收者微信id
-     * @return 发送结果状态码
-     */
-    public int sendFile(String path, String receiver) {
-        Wcf.PathMsg pathMsg = Wcf.PathMsg.newBuilder().setPath(path).setReceiver(receiver).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_SEND_FILE_VALUE).setFile(pathMsg).build();
-        log.debug("sendFile: {}", bytesToHex(req.toByteArray()));
-        Response rsp = sendCmd(req);
-        int ret = -1;
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 发送Xml消息
-     *
-     * @param receiver 接收者微信id
-     * @param xml xml内容
-     * @param path 路径
-     * @param type 类型
-     * @return 发送结果状态码
-     */
-    public int sendXml(String receiver, String xml, String path, int type) {
-        Wcf.XmlMsg xmlMsg = Wcf.XmlMsg.newBuilder().setContent(xml).setReceiver(receiver).setPath(path).setType(type).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_SEND_XML_VALUE).setXml(xmlMsg).build();
-        log.debug("sendXml: {}", bytesToHex(req.toByteArray()));
-        Response rsp = sendCmd(req);
-        int ret = -1;
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 发送表情消息
-     *
-     * @param path 表情路径
-     * @param receiver 消息接收者
-     * @return 发送结果状态码
-     */
-    public int sendEmotion(String path, String receiver) {
-        Wcf.PathMsg pathMsg = Wcf.PathMsg.newBuilder().setPath(path).setReceiver(receiver).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_SEND_EMOTION_VALUE).setFile(pathMsg).build();
-        log.debug("sendEmotion: {}", bytesToHex(req.toByteArray()));
-        Response rsp = sendCmd(req);
-        int ret = -1;
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 接收好友请求
-     *
-     * @param v3 xml.attrib["encryptusername"]
-     * @param v4 xml.attrib["ticket"]
-     * @return 结果状态码
-     */
-    public int acceptNewFriend(String v3, String v4) {
-        int ret = -1;
-        Verification verification = Verification.newBuilder().setV3(v3).setV4(v4).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_ACCEPT_FRIEND_VALUE).setV(verification).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
-     * 添加群成员为微信好友
-     *
-     * @param roomID 群ID
-     * @param wxIds 要加群的人列表，逗号分隔
-     * @return 1 为成功，其他失败
-     */
-    public int addChatroomMembers(String roomID, String wxIds) {
-        int ret = -1;
-        MemberMgmt memberMgmt = MemberMgmt.newBuilder().setRoomid(roomID).setWxids(wxIds).build();
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_ADD_ROOM_MEMBERS_VALUE).setM(memberMgmt).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            ret = rsp.getStatus();
-        }
-        return ret;
-    }
-
-    /**
      * 解密图片
      *
      * @param srcPath 加密的图片路径
@@ -398,20 +186,6 @@ public class WeChatSocketClient {
             ret = rsp.getStatus();
         }
         return ret == 1;
-    }
-
-    /**
-     * 获取个人信息
-     *
-     * @return 个人信息
-     */
-    public UserInfo getUserInfo() {
-        Request req = Request.newBuilder().setFuncValue(Functions.FUNC_GET_USER_INFO_VALUE).build();
-        Response rsp = sendCmd(req);
-        if (rsp != null) {
-            return rsp.getUi();
-        }
-        return null;
     }
 
     public boolean getIsReceivingMsg() {
@@ -432,10 +206,11 @@ public class WeChatSocketClient {
      *
      * @param wxMsgXml XML消息
      * @param wxMsgContent 消息内容
+     * @param selfWxId 自己的微信id
      * @return 是否
      */
-    public boolean isAtMeMsg(String wxMsgXml, String wxMsgContent) {
-        String format = String.format("<atuserlist><![CDATA[%s]]></atuserlist>", getSelfWxId());
+    public boolean isAtMeMsg(String wxMsgXml, String wxMsgContent, String selfWxId) {
+        String format = String.format("<atuserlist><![CDATA[%s]]></atuserlist>", selfWxId);
         boolean isAtAll = wxMsgContent.startsWith("@所有人") || wxMsgContent.startsWith("@all");
         if (wxMsgXml.contains(format) && !isAtAll) {
             return true;
@@ -515,21 +290,6 @@ public class WeChatSocketClient {
         }
     }
 
-    public void printContacts(List<RpcContact> contacts) {
-        for (RpcContact c : contacts) {
-            int value = c.getGender();
-            String gender;
-            if (SexEnum.BOY.getCode().equals(String.valueOf(value))) {
-                gender = "男";
-            } else if (SexEnum.GIRL.getCode().equals(String.valueOf(value))) {
-                gender = "女";
-            } else {
-                gender = "未知";
-            }
-            log.info("{}, {}, {}, {}, {}, {}, {}", c.getWxid(), c.getName(), c.getCode(), c.getCountry(), c.getProvince(), c.getCity(), gender);
-        }
-    }
-
     public void printWxMsg(WxMsg msg) {
         WxPpMsgDTO dto = new WxPpMsgDTO();
         dto.setIsSelf(msg.getIsSelf());
@@ -549,7 +309,7 @@ public class WeChatSocketClient {
         log.info("收到消息: {}", jsonString);
     }
 
-    private String bytesToHex(byte[] bytes) {
+    public String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
             sb.append(String.format("%02x", b));
@@ -563,7 +323,16 @@ public class WeChatSocketClient {
         }
     }
 
-    public void forwardMsg(WxMsg msg, String url) {
+    /**
+     * 本机回调解析消息
+     *
+     * @param msg 消息内容
+     * @param url 回调地址
+     *
+     * @author chandler
+     * @date 2024-10-05 12:50
+     */
+    public void localCallbackAnalyzeMsg(WxMsg msg, String url) {
         String xml = msg.getXml();
         xml = xml.replaceAll(">[\\s\\p{Zs}]*<", "><");
         String content = msg.getContent();
@@ -611,10 +380,50 @@ public class WeChatSocketClient {
         try {
             String responseStr = HttpClientUtil.doPostJson(url, jsonString);
             if (!JSONObject.parseObject(responseStr).getString("code").equals("200")) {
-                log.error("本机消息转发失败！-URL：{}", url);
+                log.error("本机消息回调失败！-URL：{}", url);
             }
         } catch (Exception e) {
-            log.error("转发接口报错：", e);
+            log.error("本机消息回调接口报错：", e);
+        }
+    }
+
+    /**
+     * 获取SQL类型
+     *
+     * @param type 转换类型
+     * @return 函数
+     *
+     * @author chandler
+     * @date 2024-10-05 12:54
+     */
+    public Function<byte[], Object> getSqlType(int type) {
+        Map<Integer, Function<byte[], Object>> sqlTypeMap = new HashMap<>();
+        // 初始化SQL_TYPES 根据类型执行不同的Func
+        sqlTypeMap.put(1, bytes -> new String(bytes, StandardCharsets.UTF_8));
+        sqlTypeMap.put(2, bytes -> ByteBuffer.wrap(bytes).getFloat());
+        sqlTypeMap.put(3, bytes -> new String(bytes, StandardCharsets.UTF_8));
+        sqlTypeMap.put(4, bytes -> bytes);
+        sqlTypeMap.put(5, bytes -> null);
+        return sqlTypeMap.get(type);
+    }
+
+    /**
+     * SQL转换类型
+     *
+     * @param type 转换类型
+     * @param content 待转换内容
+     *
+     * @author chandler
+     * @date 2024-10-05 12:54
+     */
+    public Object convertSqlVal(int type, ByteString content) {
+        // 根据每一列的类型转换
+        Function<byte[], Object> converter = getSqlType(type);
+        if (converter != null) {
+            return converter.apply(content.toByteArray());
+        } else {
+            log.warn("[SQL转换类型]-未知的SQL类型: {}", type);
+            return content.toByteArray();
         }
     }
 

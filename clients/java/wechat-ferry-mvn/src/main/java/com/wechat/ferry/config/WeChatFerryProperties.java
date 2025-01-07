@@ -30,29 +30,41 @@ public class WeChatFerryProperties {
     private Integer socketPort;
 
     /**
+     * 联系人类型-官方杂号，禁止与其他分类重复(格式：代码|名称)
+     * 使用时记得需要提取代码或者名称匹配
+     */
+    private List<String> contactsTypeMixed;
+
+    /**
+     * 联系人类型-公众号，禁止与其他分类重复(格式：代码|名称)
+     * 使用时记得需要提取代码或者名称匹配
+     */
+    private List<String> contactsTypeOfficial;
+
+    /**
      * 需要开启消息处理的群
      */
     private List<String> openMsgGroups;
 
     /**
-     * 接收消息转发开关
+     * 接收消息回调开关
      */
-    private Boolean receiveMsgFwdSwitch = false;
+    private Boolean receiveMsgCallbackSwitch = false;
 
     /**
-     * 接收消息转发URL
+     * 接收消息回调地址
      */
-    private List<String> receiveMsgFwdUrls;
+    private List<String> receiveMsgCallbackUrls;
 
     /**
-     * 发送消息转发标识 1-关闭 2-全转发 3-发送成功才转发
+     * 发送消息回调标识 1-关闭 2-全部回调 3-发送成功才回调
      */
-    private String sendMsgFwdFlag = "1";
+    private String sendMsgCallbackFlag = "1";
 
     /**
-     * 发送消息转发URL
+     * 发送消息回调地址
      */
-    private List<String> sendMsgFwdUrls;
+    private List<String> sendMsgCallbackUrls;
 
     /**
      * 调用第三方服务客户端成功状态码
